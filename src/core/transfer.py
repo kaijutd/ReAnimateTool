@@ -226,15 +226,7 @@ def mode_transfer_hybrid_b(src, tgt, frame, frame_offset, attrs, mode, correctio
 @register_mode("transfer (quaternion)")
 def mode_transfer_quaternion(src, tgt, frame, frame_offset, attrs, mode, corrections):
     """Quaternion-based rotation transfer via world space."""
-    try:
-        requested = _normalize_requested(attrs)
-        ft = frame + frame_offset
-        q_src_world = get_world_quaternion(src)
-        parent = cmd.listRelatives(tgt, p=True, f=True)
-        q_local = get_world_quaternion(parent[0]).inverse() * q_src_world if parent else q_src_world
-        _set_rotation_keys(tgt, _quat_to_euler(q_local, tgt), ft, requested)
-    except Exception as ex:
-        cmd.warning(f"Quaternion transfer failed for {src}->{tgt} @ {frame}: {ex}")
+    apply_quaternion_transfer(src, tgt, frame + (frame_offset or 0), attrs or [])
 
 
 @register_mode("transfer (matrix)")

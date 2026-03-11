@@ -153,41 +153,19 @@ class AttrGroupDelegate(QtWidgets.QStyledItemDelegate):
 
     def _apply_change(self, model, index, attr, group_data, is_master, axis=None):
         """Apply attribute changes and propagate master updates to children."""
+        data = model.data(index, QtCore.Qt.UserRole) or {}
+        data.setdefault(attr, {"X": True, "Y": True, "Z": True})
+
+        if axis:
+            data[attr][axis] = group_data[axis]
+        else:
+            data[attr].update(group_data)
+
         if is_master:
             model._last_changed_attr = (attr, axis)
 
-            master_data = model.data(index, QtCore.Qt.UserRole) or {}
-
-            if attr not in master_data:
-                master_data[attr] = {"X": True, "Y": True, "Z": True}
-
-            if axis:
-                master_data[attr][axis] = group_data[axis]
-            else:
-                master_data[attr].update(group_data)
-
-            model.setData(index, master_data, QtCore.Qt.UserRole)
-            model.dataChanged.emit(index, index, [QtCore.Qt.UserRole])
-
-            model.propagate_attr_group_from_master(
-                attr,
-                {axis: group_data[axis]} if axis else group_data,
-                axis=axis,
-            )
-
-        else:
-            data = model.data(index, QtCore.Qt.UserRole) or {}
-
-            if attr not in data:
-                data[attr] = {"X": True, "Y": True, "Z": True}
-
-            if axis:
-                data[attr][axis] = group_data[axis]
-            else:
-                data[attr].update(group_data)
-
-            model.setData(index, data, QtCore.Qt.UserRole)
-            model.dataChanged.emit(index, index, [QtCore.Qt.UserRole])
+        model.setData(index, data, QtCore.Qt.UserRole)
+        model.dataChanged.emit(index, index, [QtCore.Qt.UserRole])
 
     def createEditor(self, parent, option, index):
         """Disable text editing for attribute cells."""

@@ -198,15 +198,7 @@ class ReAnimateToolUI(QtWidgets.QWidget):
         model.setData(index, joint_name, QtCore.Qt.EditRole)
         model.setData(index, QtGui.QColor("#555555"), QtCore.Qt.ForegroundRole)
 
-    def _on_enable_toggle(self, row, state):
-        """Dim or restore a row visually when its Enabled checkbox changes."""
-        model = self.mapping_tree.model()
-        if not model:
-            return
-        color = QtGui.QColor("#e0e0e0") if state == QtCore.Qt.Checked else QtGui.QColor("#555555")
-        for col in range(1, model.columnCount()):
-            model.setData(model.index(row, col), color, QtCore.Qt.ForegroundRole)
-        self.mapping_tree.viewport().update()
+
 
     # --- Library Tab ---
 

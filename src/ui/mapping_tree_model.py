@@ -146,14 +146,17 @@ class MappingTreeModel(QtCore.QAbstractItemModel):
             return None
         col = index.column()
 
-        if role == QtCore.Qt.ForegroundRole and col == 2:
-            score = item.data.get("score", 0)
-            if isinstance(score, str) and score.upper() == "MANUAL":
-                return QtGui.QColor("#888888")
-            if isinstance(score, (int, float)):
-                if score >= 0.8:   return QtGui.QColor("#00ff00")
-                elif score >= 0.6: return QtGui.QColor("#ffff00")
-                else:              return QtGui.QColor("#ff5555")
+        if role == QtCore.Qt.ForegroundRole:
+            if not item.data.get("enabled", True) and col != 2:
+                return QtGui.QColor("#555555")
+            if col == 2:
+                score = item.data.get("score", 0)
+                if isinstance(score, str) and score.upper() == "MANUAL":
+                    return QtGui.QColor("#888888")
+                if isinstance(score, (int, float)):
+                    if score >= 0.8:   return QtGui.QColor("#00ff00")
+                    elif score >= 0.6: return QtGui.QColor("#ffff00")
+                    else:              return QtGui.QColor("#ff5555")
 
         if role == QtCore.Qt.DisplayRole:
             if col == 0: return item.data.get("name", "")
@@ -195,6 +198,7 @@ class MappingTreeModel(QtCore.QAbstractItemModel):
                 first = self.index(0, 1, QtCore.QModelIndex())
                 last = self.index(self.rowCount(QtCore.QModelIndex()) - 1, 1, QtCore.QModelIndex())
                 self.dataChanged.emit(first, last, [QtCore.Qt.CheckStateRole])
+                self.layoutChanged.emit()
 
             elif col == 3 and role == QtCore.Qt.UserRole:
                 item.data["attr_enabled"] = deepcopy(value)
@@ -206,12 +210,12 @@ class MappingTreeModel(QtCore.QAbstractItemModel):
                             cd = child.data.get("attr_enabled", {}).copy()
                             cd.setdefault(attr, {"X": True, "Y": True, "Z": True})
                             if axis:
-                                cd[attr][axis] = value.get(axis, True)
+                                cd[attr][axis] = value.get(attr, {}).get(axis, True)
                             else:
-                                cd[attr].update(value)
+                                cd[attr].update(value.get(attr, {}))
                             child.data["attr_enabled"] = cd
                             propagate(child)
-                    propagate(item)
+                    propagate(self.root_item)
                     self._last_changed_attr = None
                 else:
                     for child in self.root_item.children[1:]:
