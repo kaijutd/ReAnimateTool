@@ -260,7 +260,7 @@ class ReAnimateToolController(QtCore.QObject):
         if not path:
             return
         data = json_io.load_pose(path)
-        mapping = {m["source"]: m["target"] for m in self.model.as_serializable().get("mappings", [])}
+        mapping = {m["source"]: m["target"] for m in self.model.get_mappings()}
         json_io.apply_pose(data, mapping)
         cmd.inViewMessage(amg="Applied pose to target", pos='midCenter', fade=True)
 
@@ -282,7 +282,7 @@ class ReAnimateToolController(QtCore.QObject):
         if not path:
             return
         data = json_io.load_animation(path)
-        mapping = {m["source"]: m["target"] for m in self.model.as_serializable().get("mappings", [])}
+        mapping = {m["source"]: m["target"] for m in self.model.get_mappings()}
         json_io.apply_animation(data, mapping, frame_offset=0)
         cmd.inViewMessage(amg="Applied animation to target", pos='midCenter', fade=True)
 
@@ -292,7 +292,7 @@ class ReAnimateToolController(QtCore.QObject):
         if not path:
             return
         data = json_io.load_pose(path)
-        mapping = {m["source"]: m["target"] for m in self.model.as_serializable().get("mappings", [])}
+        mapping = {m["source"]: m["target"] for m in self.model.get_mappings()}
         json_io.apply_pose(data, mapping, set_keys=False)
         cmd.inViewMessage(amg="Previewed pose (no keys set)", pos='midCenter', fade=True)
 

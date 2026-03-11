@@ -1,0 +1,385 @@
+"""
+core/library_io.py - Save, load, and manage pose and animation library entries.
+Handles JSON data, viewport thumbnail capture, and sprite sheet generation for ReAnimate Tool.
+"""
+
+import os
+import json
+import datetime
+import maya.cmds as cmds
+import maya.api.OpenMaya as om
+
+LIBRARY_DIR = os.path.join(cmds.internalVar(userAppDir=True), "reanimate_library")
+POSES_DIR = os.path.join(LIBRARY_DIR, "poses")
+ANIMS_DIR = os.path.join(LIBRARY_DIR, "animations")
+
+
+# --- Directory Helpers ---
+
+def _ensure_dirs():
+    """Create library subdirectories if they don't exist."""
+    for d in (POSES_DIR, ANIMS_DIR):
+        os.makedirs(d, exist_ok=True)
+
+
+def _timestamp():
+    """Return a formatted timestamp string."""
+    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _safe_filename(name):
+    """Convert a display name to a safe filename."""
+    return name.strip().replace(" ", "_").lower()
+
+
+# --- Joint Helpers ---
+
+def get_joints_under_root(root):
+    """
+    Return all joints in the hierarchy under root, including root.
+
+    Args:
+        root (str): Root joint name.
+
+    Returns:
+        list: All joint names in the hierarchy.
+    """
+    if not cmds.objExists(root):
+        cmds.warning(f"Root joint '{root}' does not exist.")
+        return []
+    joints = cmds.listRelatives(root, allDescendents=True, type="joint", fullPath=False) or []
+    return [root] + joints
+
+
+# --- Thumbnail Capture ---
+
+def capture_viewport_thumbnail(path, width=256, height=256):
+    """
+    Capture the active Maya viewport as a PNG thumbnail.
+
+    Args:
+        path (str): Full path to save the PNG (without extension).
+
+    Returns:
+        str: Path to saved image file, or None on failure.
+    """
+    try:
+        result = cmds.playblast(
+            completeFilename=path,
+            forceOverwrite=True,
+            format="image",
+            width=width,
+            height=height,
+            showOrnaments=False,
+            startTime=cmds.currentTime(q=True),
+            endTime=cmds.currentTime(q=True),
+            viewer=False,
+            percent=100
+        )
+        # Maya appends frame number — find the actual file
+        for ext in (".png", ".jpg", ".jpeg"):
+            candidate = path + ext
+            if os.path.exists(candidate):
+                return candidate
+            # Maya sometimes appends .0000
+            numbered = f"{path}.0000{ext}"
+            if os.path.exists(numbered):
+                os.rename(numbered, candidate)
+                return candidate
+        return result
+    except Exception as e:
+        cmds.warning(f"Thumbnail capture failed: {e}")
+        return None
+
+
+def capture_sprite_sheet(path, start_frame, end_frame, num_frames=5, width=256, height=256):
+    """
+    Capture evenly spaced frames and stitch them into a horizontal sprite sheet PNG.
+
+    Args:
+        path (str): Base path for temporary frames and final sprite sheet.
+        start_frame (int): Animation start frame.
+        end_frame (int): Animation end frame.
+        num_frames (int): Number of frames to capture.
+        width (int): Width of each frame.
+        height (int): Height of each frame.
+
+    Returns:
+        str: Path to the saved sprite sheet PNG, or None on failure.
+    """
+    try:
+        import importlib
+        if not importlib.util.find_spec("PIL"):
+            cmds.warning("Pillow not installed — falling back to single frame thumbnail.")
+            cmds.currentTime(start_frame)
+            return capture_viewport_thumbnail(path, width, height)
+
+        from PIL import Image
+
+        total = end_frame - start_frame
+        frames = [int(start_frame + total * i / (num_frames - 1)) for i in range(num_frames)]
+        captured = []
+
+        for i, frame in enumerate(frames):
+            cmds.currentTime(frame)
+            frame_path = f"{path}_frame{i}"
+            result = capture_viewport_thumbnail(frame_path, width, height)
+            if result and os.path.exists(result):
+                captured.append(result)
+
+        if not captured:
+            cmds.warning("No frames captured for sprite sheet.")
+            return None
+
+        images = [Image.open(f) for f in captured]
+        sheet_width = width * len(images)
+        sheet = Image.new("RGB", (sheet_width, height))
+        for i, img in enumerate(images):
+            sheet.paste(img.resize((width, height)), (i * width, 0))
+
+        sheet_path = path + "_sprite.png"
+        sheet.save(sheet_path)
+
+        for f in captured:
+            try:
+                os.remove(f)
+            except Exception:
+                pass
+
+        return sheet_path
+
+    except Exception as e:
+        cmds.warning(f"Sprite sheet generation failed: {e}")
+        return None
+
+
+# --- Pose ---
+
+def save_pose(name, root, frame, mapping=None):
+    """
+    Save a pose entry for all joints under root at the given frame.
+
+    Args:
+        name (str): Display name for the entry.
+        root (str): Source root joint.
+        frame (int): Frame to capture.
+        mapping (list): Optional serialized mapping tree data.
+
+    Returns:
+        str: Path to saved JSON file, or None on failure.
+    """
+    _ensure_dirs()
+    joints = get_joints_under_root(root)
+    if not joints:
+        return None
+
+    cmds.currentTime(frame)
+    joint_data = {}
+    for jnt in joints:
+        if not cmds.objExists(jnt):
+            continue
+        try:
+            joint_data[jnt] = {
+                "translate": list(cmds.getAttr(f"{jnt}.translate")[0]),
+                "rotate": list(cmds.getAttr(f"{jnt}.rotate")[0]),
+                "scale": list(cmds.getAttr(f"{jnt}.scale")[0])
+            }
+        except Exception:
+            pass
+
+    base = os.path.join(POSES_DIR, _safe_filename(name))
+    thumb = capture_viewport_thumbnail(base + "_thumb")
+
+    data = {
+        "type": "pose",
+        "name": name,
+        "timestamp": _timestamp(),
+        "frame": frame,
+        "root": root,
+        "thumbnail": thumb,
+        "mapping": mapping,
+        "joints": joint_data
+    }
+
+    json_path = base + ".json"
+    with open(json_path, "w") as f:
+        json.dump(data, f, indent=4)
+
+    cmds.inViewMessage(amg=f"Pose '{name}' saved to library", pos="midCenter", fade=True)
+    return json_path
+
+
+def load_pose(path):
+    """Load a pose JSON file."""
+    with open(path, "r") as f:
+        return json.load(f)
+
+
+def apply_pose(data, mapping=None):
+    """
+    Apply a saved pose to the scene using an optional joint mapping.
+
+    Args:
+        data (dict): Pose data dict from load_pose.
+        mapping (list): Optional list of {source, target} dicts.
+    """
+    frame = data.get("frame", cmds.currentTime(q=True))
+    cmds.currentTime(frame)
+
+    mapping_dict = {m["source"]: m["target"] for m in mapping} if mapping else {}
+
+    for src, values in data.get("joints", {}).items():
+        tgt = mapping_dict.get(src, src)
+        if not cmds.objExists(tgt):
+            continue
+        try:
+            cmds.setAttr(f"{tgt}.translate", *values["translate"])
+            cmds.setAttr(f"{tgt}.rotate", *values["rotate"])
+            cmds.setAttr(f"{tgt}.scale", *values["scale"])
+            cmds.setKeyframe(tgt, attribute="translate", time=frame)
+            cmds.setKeyframe(tgt, attribute="rotate", time=frame)
+            cmds.setKeyframe(tgt, attribute="scale", time=frame)
+        except Exception as e:
+            cmds.warning(f"Failed to apply pose on {tgt}: {e}")
+
+
+# --- Animation ---
+
+def save_animation(name, root, start_frame, end_frame, mapping=None):
+    """
+    Save an animation entry for all joints under root over a frame range.
+
+    Args:
+        name (str): Display name for the entry.
+        root (str): Source root joint.
+        start_frame (int): Start frame.
+        end_frame (int): End frame.
+        mapping (list): Optional serialized mapping tree data.
+
+    Returns:
+        str: Path to saved JSON file, or None on failure.
+    """
+    _ensure_dirs()
+    joints = get_joints_under_root(root)
+    if not joints:
+        return None
+
+    attrs = ["translateX", "translateY", "translateZ",
+             "rotateX", "rotateY", "rotateZ",
+             "scaleX", "scaleY", "scaleZ"]
+
+    joint_data = {}
+    for jnt in joints:
+        if not cmds.objExists(jnt):
+            continue
+        joint_data[jnt] = {}
+        for attr in attrs:
+            times = cmds.keyframe(jnt, at=attr, q=True, time=(start_frame, end_frame)) or []
+            values = cmds.keyframe(jnt, at=attr, q=True, valueChange=True, time=(start_frame, end_frame)) or []
+            if times and values:
+                joint_data[jnt][attr] = list(zip(times, values))
+
+    base = os.path.join(ANIMS_DIR, _safe_filename(name))
+    sprite = capture_sprite_sheet(base + "_thumb", start_frame, end_frame)
+
+    data = {
+        "type": "animation",
+        "name": name,
+        "timestamp": _timestamp(),
+        "start_frame": start_frame,
+        "end_frame": end_frame,
+        "fps": cmds.playbackOptions(q=True, fps=True),
+        "root": root,
+        "thumbnail": sprite,
+        "mapping": mapping,
+        "joints": joint_data
+    }
+
+    json_path = base + ".json"
+    with open(json_path, "w") as f:
+        json.dump(data, f, indent=4)
+
+    cmds.inViewMessage(amg=f"Animation '{name}' saved to library", pos="midCenter", fade=True)
+    return json_path
+
+
+def load_animation(path):
+    """Load an animation JSON file."""
+    with open(path, "r") as f:
+        return json.load(f)
+
+
+def apply_animation(data, mapping=None, frame_offset=0):
+    """
+    Apply saved animation keyframes to the scene using an optional joint mapping.
+
+    Args:
+        data (dict): Animation data dict from load_animation.
+        mapping (list): Optional list of {source, target} dicts.
+        frame_offset (int): Frame offset to apply on load.
+    """
+    mapping_dict = {m["source"]: m["target"] for m in mapping} if mapping else {}
+
+    for src, attrs in data.get("joints", {}).items():
+        tgt = mapping_dict.get(src, src)
+        if not cmds.objExists(tgt):
+            continue
+        for attr, keys in attrs.items():
+            for frame, val in keys:
+                try:
+                    cmds.setKeyframe(f"{tgt}.{attr}", time=frame + frame_offset, value=val)
+                except Exception as e:
+                    cmds.warning(f"Failed to set key on {tgt}.{attr}: {e}")
+
+
+# --- List / Delete ---
+
+def list_entries(entry_type):
+    """
+    List all saved library entries of a given type.
+
+    Args:
+        entry_type (str): "pose" or "animation".
+
+    Returns:
+        list of dicts: Each with 'name', 'path', 'thumbnail', and 'timestamp'.
+    """
+    _ensure_dirs()
+    directory = POSES_DIR if entry_type == "pose" else ANIMS_DIR
+    entries = []
+    for f in sorted(os.listdir(directory)):
+        if not f.endswith(".json"):
+            continue
+        path = os.path.join(directory, f)
+        try:
+            with open(path, "r") as fh:
+                data = json.load(fh)
+            entries.append({
+                "name": data.get("name", f.replace(".json", "")),
+                "path": path,
+                "thumbnail": data.get("thumbnail"),
+                "timestamp": data.get("timestamp", ""),
+                "type": entry_type
+            })
+        except Exception:
+            pass
+    return entries
+
+
+def delete_entry(path):
+    """
+    Delete a library entry JSON and its associated thumbnail.
+
+    Args:
+        path (str): Full path to the JSON file.
+    """
+    try:
+        with open(path, "r") as f:
+            data = json.load(f)
+        thumb = data.get("thumbnail")
+        if thumb and os.path.exists(thumb):
+            os.remove(thumb)
+        os.remove(path)
+        cmds.inViewMessage(amg="Entry deleted from library", pos="midCenter", fade=True)
+    except Exception as e:
+        cmds.warning(f"Failed to delete entry: {e}")
