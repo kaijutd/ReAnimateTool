@@ -1,52 +1,52 @@
+"""
+ui/delegates/mode_delegate.py - Delegate for the transfer mode column.
+Renders and edits transfer mode selection via an inline dropdown.
+"""
+
 from PySide6 import QtWidgets, QtGui, QtCore
 from ui.styles.common_style import apply_style
 
 
 class ModeDelegate(QtWidgets.QStyledItemDelegate):
-    """Delegate for the Mode column (Transfer / Constrain / Ignore)."""
+    """Inline dropdown delegate for selecting joint transfer modes."""
+
+    MODES = [
+        "Transfer (World)", "Transfer (Hybrid Local)", "Transfer (Hybrid World)",
+        "Transfer (Quaternion)", "Transfer (Matrix)", "Overwrite", "Ignore", "Keep"
+    ]
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.modes = ["Transfer (World)", "Transfer (Hybrid Local)","Transfer (Hybrid World)","Transfer (Quaternion)","Transfer (Matrix)","Overwrite", "Ignore","Keep"]
 
     def paint(self, painter, option, index):
+        """Render the mode value as styled text."""
         painter.save()
         rect = option.rect
         value = index.data(QtCore.Qt.DisplayRole) or "Transfer"
 
-        if option.state & QtWidgets.QStyle.State_Selected:
-            painter.fillRect(rect, QtGui.QColor("#007acc"))
-        else:
-            painter.fillRect(rect, QtGui.QColor("#2b2b2b"))
+        bg = QtGui.QColor("#007acc") if option.state & QtWidgets.QStyle.State_Selected else QtGui.QColor("#2b2b2b")
+        painter.fillRect(rect, bg)
 
-        painter.setPen(QtGui.QColor("#e0e0e0"))
         font = option.font
         font.setPointSize(10)
         painter.setFont(font)
-        painter.drawText(rect.adjusted(6, 0, -6, 0),
-                         QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft,
-                         value)
+        painter.setPen(QtGui.QColor("#e0e0e0"))
+        painter.drawText(rect.adjusted(6, 0, -6, 0), QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft, value)
         painter.restore()
 
     def createEditor(self, parent, option, index):
+        """Create a styled combo box that commits on selection."""
         combo = QtWidgets.QComboBox(parent)
-        combo.addItems(self.modes)
+        combo.addItems(self.MODES)
         combo.setEditable(False)
-
         apply_style(combo, "DARK")
         combo.setStyleSheet(combo.styleSheet() + """
-            QComboBox {
-                padding: 2px 6px;
-                min-height: 18px;
-            }
+            QComboBox { padding: 2px 6px; min-height: 18px; }
             QComboBox::drop-down {
                 subcontrol-origin: padding;
                 subcontrol-position: top right;
                 width: 16px;
                 border-left: 1px solid #555;
-            }
-            QComboBox::down-arrow {
-                image: none;  /* keep default arrow */
             }
             QComboBox QAbstractItemView {
                 background-color: #2b2b2b;
@@ -54,16 +54,12 @@ class ModeDelegate(QtWidgets.QStyledItemDelegate):
                 color: #e0e0e0;
             }
         """)
-
-        # Connect activated signal to commit and close immediately
-        combo.activated.connect(lambda _: self.commit_and_close(combo))
-
-        # Install event filter for instant popup
+        combo.activated.connect(lambda _: self._commit_and_close(combo))
         combo.installEventFilter(self)
         return combo
 
-    def commit_and_close(self, editor):
-        """Commit current value to model and close editor."""
+    def _commit_and_close(self, editor):
+        """Commit the selected value and close the editor."""
         self.commitData.emit(editor)
         self.closeEditor.emit(editor, QtWidgets.QAbstractItemDelegate.NoHint)
 
@@ -81,15 +77,15 @@ class ModeDelegate(QtWidgets.QStyledItemDelegate):
         return QtCore.QSize(metrics.horizontalAdvance("Constrain") + 24, metrics.height() + 6)
 
     def editorEvent(self, event, model, option, index):
+        """Trigger edit on mouse press."""
         if event.type() == QtCore.QEvent.MouseButtonPress:
-            view = option.widget
-            if view:
-                view.edit(index)
+            if option.widget:
+                option.widget.edit(index)
             return True
         return super().editorEvent(event, model, option, index)
 
     def eventFilter(self, obj, event):
-        # Show popup immediately when editor is ready
+        """Show dropdown popup immediately when editor appears."""
         if isinstance(obj, QtWidgets.QComboBox):
             if event.type() in (QtCore.QEvent.Show, QtCore.QEvent.FocusIn):
                 QtCore.QTimer.singleShot(0, obj.showPopup)

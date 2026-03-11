@@ -1,61 +1,73 @@
+"""
+core/library.py - Global pose and animation library for ReAnimate Tool.
+Stores and retrieves JSON entries from a persistent Maya user directory.
+"""
+
 import os
 import json
 from maya import cmds
-from . import json_io
 
 LIBRARY_DIR = os.path.join(cmds.internalVar(userAppDir=True), "reanimate_library")
 
-def ensure_library_dir():
-    """Ensure a global library directory exists."""
-    if not os.path.exists(LIBRARY_DIR):
-        os.makedirs(LIBRARY_DIR)
+
+def _ensure_library_dir():
+    """Create the library directory if it doesn't exist."""
+    os.makedirs(LIBRARY_DIR, exist_ok=True)
     return LIBRARY_DIR
+
 
 def save_entry(entry_type, name, data):
     """
-    Save a pose or animation entry to the global JSON library.
+    Save a pose or animation entry to the library.
 
     Args:
-        entry_type (str): "pose" or "animation"
-        name (str): A user-friendly name for the entry
-        data (dict): JSON data structure (pose or anim)
-    """
-    ensure_library_dir()
-    safe_name = name.replace(" ", "_").lower()
-    filename = f"{safe_name}_{entry_type}.json"
-    path = os.path.join(LIBRARY_DIR, filename)
+        entry_type (str): "pose" or "animation".
+        name (str): User-friendly name for the entry.
+        data (dict): JSON-serializable pose or animation data.
 
+    Returns:
+        str: Path to the saved file.
+    """
+    _ensure_library_dir()
+    filename = f"{name.replace(' ', '_').lower()}_{entry_type}.json"
+    path = os.path.join(LIBRARY_DIR, filename)
     with open(path, "w") as f:
         json.dump(data, f, indent=4)
-
-    cmds.inViewMessage(amg=f"✅ Saved '{name}' {entry_type} to library!", pos="midCenter", fade=True)
+    cmds.inViewMessage(amg=f"Saved '{name}' {entry_type} to library", pos="midCenter", fade=True)
     return path
+
 
 def list_entries(entry_type=None):
     """
-    List all available entries in the library.
+    List all JSON entries in the library, optionally filtered by type.
 
     Args:
         entry_type (str): "pose", "animation", or None for all.
+
+    Returns:
+        list: Sorted list of matching filenames.
     """
-    ensure_library_dir()
-    entries = []
-    for f in os.listdir(LIBRARY_DIR):
-        if f.endswith(".json"):
-            if entry_type and entry_type not in f:
-                continue
-            entries.append(f)
-    return sorted(entries)
+    _ensure_library_dir()
+    return sorted(
+        f for f in os.listdir(LIBRARY_DIR)
+        if f.endswith(".json") and (not entry_type or entry_type in f)
+    )
+
 
 def load_entry(name):
     """
-    Load a JSON entry by filename or partial name.
+    Load a library entry by filename or partial name match.
+
+    Args:
+        name (str): Full or partial filename to search for.
+
+    Returns:
+        dict or None: Parsed JSON data, or None if not found.
     """
-    ensure_library_dir()
+    _ensure_library_dir()
     for f in os.listdir(LIBRARY_DIR):
         if name.lower() in f.lower():
-            path = os.path.join(LIBRARY_DIR, f)
-            with open(path, "r") as file:
+            with open(os.path.join(LIBRARY_DIR, f), "r") as file:
                 return json.load(file)
-    cmds.warning(f"⚠️ No entry named '{name}' found.")
+    cmds.warning(f"No library entry matching '{name}' found.")
     return None

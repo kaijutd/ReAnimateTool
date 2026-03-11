@@ -1,46 +1,73 @@
-# ReAnimate/core/pose_io.py
-from maya import cmds as cmd
+"""
+core/library.py - Global pose and animation library for ReAnimate Tool.
+Stores and retrieves JSON entries from a persistent Maya user directory.
+"""
 
-def apply_pose(pose_data, mapping):
-    """Apply a saved pose dict to a target rig based on a joint mapping."""
-    if not pose_data or "joints" not in pose_data:
-        cmd.warning("Invalid pose data.")
-        return
+import os
+import json
+from maya import cmds
 
-    for src, tgt in mapping.items():
-        if src not in pose_data["joints"]:
-            continue
-        if not cmd.objExists(tgt):
-            continue
-
-        attrs = pose_data["joints"][src]
-        for attr_type, values in attrs.items():
-            if len(values) != 3:
-                continue
-            if attr_type == "translate":
-                cmd.setAttr(f"{tgt}.translate", *values)
-            elif attr_type == "rotate":
-                cmd.setAttr(f"{tgt}.rotate", *values)
-            elif attr_type == "scale":
-                cmd.setAttr(f"{tgt}.scale", *values)
+LIBRARY_DIR = os.path.join(cmds.internalVar(userAppDir=True), "reanimate_library")
 
 
-def apply_animation(anim_data, mapping, frame_offset=0):
-    """Apply animation data (keyframes) from JSON to target rig with optional frame offset."""
-    if not anim_data or "joints" not in anim_data:
-        cmd.warning("Invalid animation data.")
-        return
+def _ensure_library_dir():
+    """Create the library directory if it doesn't exist."""
+    os.makedirs(LIBRARY_DIR, exist_ok=True)
+    return LIBRARY_DIR
 
-    for src, tgt in mapping.items():
-        if src not in anim_data["joints"]:
-            continue
-        if not cmd.objExists(tgt):
-            continue
 
-        joint_data = anim_data["joints"][src]
-        for attr, keyframes in joint_data.items():
-            tgt_attr = f"{tgt}.{attr}"
-            if not cmd.objExists(tgt_attr):
-                continue
-            for frame, value in keyframes:
-                cmd.setKeyframe(tgt_attr, time=(frame + frame_offset), value=value)
+def save_entry(entry_type, name, data):
+    """
+    Save a pose or animation entry to the library.
+
+    Args:
+        entry_type (str): "pose" or "animation".
+        name (str): User-friendly name for the entry.
+        data (dict): JSON-serializable pose or animation data.
+
+    Returns:
+        str: Path to the saved file.
+    """
+    _ensure_library_dir()
+    filename = f"{name.replace(' ', '_').lower()}_{entry_type}.json"
+    path = os.path.join(LIBRARY_DIR, filename)
+    with open(path, "w") as f:
+        json.dump(data, f, indent=4)
+    cmds.inViewMessage(amg=f"Saved '{name}' {entry_type} to library", pos="midCenter", fade=True)
+    return path
+
+
+def list_entries(entry_type=None):
+    """
+    List all JSON entries in the library, optionally filtered by type.
+
+    Args:
+        entry_type (str): "pose", "animation", or None for all.
+
+    Returns:
+        list: Sorted list of matching filenames.
+    """
+    _ensure_library_dir()
+    return sorted(
+        f for f in os.listdir(LIBRARY_DIR)
+        if f.endswith(".json") and (not entry_type or entry_type in f)
+    )
+
+
+def load_entry(name):
+    """
+    Load a library entry by filename or partial name match.
+
+    Args:
+        name (str): Full or partial filename to search for.
+
+    Returns:
+        dict or None: Parsed JSON data, or None if not found.
+    """
+    _ensure_library_dir()
+    for f in os.listdir(LIBRARY_DIR):
+        if name.lower() in f.lower():
+            with open(os.path.join(LIBRARY_DIR, f), "r") as file:
+                return json.load(file)
+    cmds.warning(f"No library entry matching '{name}' found.")
+    return None
