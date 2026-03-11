@@ -1,11 +1,16 @@
-# ui/anim_noise_widget.py
+"""
+ui/widgets/anim_noise_widget.py - Animation noise UI widget for ReAnimate Tool.
+Provides controls for applying procedural noise to Maya animation layers.
+"""
+
 from PySide6 import QtCore, QtGui, QtWidgets
 import maya.cmds as cmds
 import random
 import math
-from core.anim_noise_core import AnimNoiseCore
 
-# Color scheme matching existing delegates
+from core.anim_noise_core import AnimNoiseCore
+from core import noise_preset_io
+
 AXIS_COLORS = {
     "tx": QtGui.QColor("#dc3232"), "ty": QtGui.QColor("#32dc32"), "tz": QtGui.QColor("#3232dc"),
     "rx": QtGui.QColor("#dc6432"), "ry": QtGui.QColor("#64dc32"), "rz": QtGui.QColor("#6432dc"),
@@ -20,19 +25,23 @@ BORDER_COLOR = QtGui.QColor("#555555")
 
 
 class AnimationNoiseWidget(QtWidgets.QWidget):
-    """Widget for adding procedural noise to animation layers."""
+    """Widget for adding procedural noise to Maya animation layers."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.selected_objects = []
         self.current_layer = None
         self.core = AnimNoiseCore()
+        self._preset_list = []  # [{name, path, builtin}, ...]
 
         self._setup_ui()
         self._connect_signals()
         self._refresh_timeline_range()
         self._refresh_layer_list()
         self._apply_initial_styles()
+        self._refresh_preset_list()
+
+    # --- UI Construction ---
 
     def _setup_ui(self):
         """Build the complete UI layout."""
@@ -47,21 +56,53 @@ class AnimationNoiseWidget(QtWidgets.QWidget):
         scroll_layout = QtWidgets.QVBoxLayout(scroll_content)
         scroll_layout.setSpacing(12)
 
-        scroll_layout.addWidget(self._build_target_section())
-        scroll_layout.addWidget(self._build_layer_section())
-        scroll_layout.addWidget(self._build_frame_range_section())
-        scroll_layout.addWidget(self._build_attributes_section())
-        scroll_layout.addWidget(self._build_noise_params_section())
-        scroll_layout.addWidget(self._build_preview_section())
+        for section in [
+            self._build_preset_section(),
+            self._build_target_section(),
+            self._build_layer_section(),
+            self._build_frame_range_section(),
+            self._build_attributes_section(),
+            self._build_noise_params_section(),
+            self._build_preview_section(),
+        ]:
+            scroll_layout.addWidget(section)
 
         scroll_layout.addStretch()
-
         scroll.setWidget(scroll_content)
         main_layout.addWidget(scroll)
         main_layout.addWidget(self._build_action_buttons())
 
+    def _build_preset_section(self):
+        """Preset load/save/delete section."""
+        group = QtWidgets.QGroupBox("Presets")
+        layout = QtWidgets.QHBoxLayout()
+
+        self.preset_combo = QtWidgets.QComboBox()
+        self.preset_combo.setMinimumWidth(200)
+        self.preset_combo.setToolTip("Select a noise preset to load.")
+        layout.addWidget(self.preset_combo)
+
+        self.load_preset_btn = QtWidgets.QPushButton("Load")
+        self.load_preset_btn.setMaximumWidth(60)
+        self.load_preset_btn.setToolTip("Apply the selected preset to current settings.")
+        layout.addWidget(self.load_preset_btn)
+
+        self.save_preset_btn = QtWidgets.QPushButton("Save")
+        self.save_preset_btn.setMaximumWidth(60)
+        self.save_preset_btn.setToolTip("Save current settings as a new preset.")
+        layout.addWidget(self.save_preset_btn)
+
+        self.delete_preset_btn = QtWidgets.QPushButton("Delete")
+        self.delete_preset_btn.setMaximumWidth(60)
+        self.delete_preset_btn.setToolTip("Delete the selected preset (user presets only).")
+        layout.addWidget(self.delete_preset_btn)
+
+        layout.addStretch()
+        group.setLayout(layout)
+        return group
+
     def _build_target_section(self):
-        """Target selection section."""
+        """Target object selection section."""
         group = QtWidgets.QGroupBox("Target")
         layout = QtWidgets.QVBoxLayout()
 
@@ -69,11 +110,9 @@ class AnimationNoiseWidget(QtWidgets.QWidget):
         self.selected_label = QtWidgets.QLabel("Selected Objects: 0")
         self.refresh_btn = QtWidgets.QPushButton("Refresh Selection")
         self.refresh_btn.setMaximumWidth(150)
-
         h_layout.addWidget(self.selected_label)
         h_layout.addStretch()
         h_layout.addWidget(self.refresh_btn)
-
         layout.addLayout(h_layout)
 
         self.randomize_per_object_cb = QtWidgets.QCheckBox("Randomize seed per object (unique variation)")
@@ -82,12 +121,11 @@ class AnimationNoiseWidget(QtWidgets.QWidget):
             "Useful for creating varied motion across multiple objects."
         )
         layout.addWidget(self.randomize_per_object_cb)
-
         group.setLayout(layout)
         return group
 
     def _build_layer_section(self):
-        """Animation layer section."""
+        """Animation layer selection and weight section."""
         group = QtWidgets.QGroupBox("Animation Layer")
         layout = QtWidgets.QVBoxLayout()
 
@@ -102,7 +140,6 @@ class AnimationNoiseWidget(QtWidgets.QWidget):
         self.create_new_radio = QtWidgets.QRadioButton("Create New Layer")
         self.add_existing_radio = QtWidgets.QRadioButton("Add to Existing Layer")
         self.create_new_radio.setChecked(True)
-
         layout.addWidget(self.create_new_radio)
         layout.addWidget(self.add_existing_radio)
 
@@ -115,8 +152,7 @@ class AnimationNoiseWidget(QtWidgets.QWidget):
         layout.addLayout(name_layout)
 
         layout.addSpacing(10)
-        weight_label = QtWidgets.QLabel("Layer Weight:")
-        layout.addWidget(weight_label)
+        layout.addWidget(QtWidgets.QLabel("Layer Weight:"))
 
         weight_layout = QtWidgets.QHBoxLayout()
         self.weight_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
@@ -127,7 +163,6 @@ class AnimationNoiseWidget(QtWidgets.QWidget):
         self.weight_spinbox.setValue(1.0)
         self.weight_spinbox.setSingleStep(0.1)
         self.weight_spinbox.setMaximumWidth(70)
-
         weight_layout.addWidget(self.weight_slider)
         weight_layout.addWidget(self.weight_spinbox)
         layout.addLayout(weight_layout)
@@ -136,7 +171,7 @@ class AnimationNoiseWidget(QtWidgets.QWidget):
         return group
 
     def _build_frame_range_section(self):
-        """Frame range section."""
+        """Frame range and sample rate section."""
         group = QtWidgets.QGroupBox("Frame Range")
         layout = QtWidgets.QVBoxLayout()
 
@@ -147,7 +182,6 @@ class AnimationNoiseWidget(QtWidgets.QWidget):
         self.start_frame_spinbox.setValue(1)
         self.start_frame_spinbox.setMaximumWidth(80)
         range_layout.addWidget(self.start_frame_spinbox)
-
         range_layout.addSpacing(20)
         range_layout.addWidget(QtWidgets.QLabel("End:"))
         self.end_frame_spinbox = QtWidgets.QSpinBox()
@@ -156,7 +190,6 @@ class AnimationNoiseWidget(QtWidgets.QWidget):
         self.end_frame_spinbox.setMaximumWidth(80)
         range_layout.addWidget(self.end_frame_spinbox)
         range_layout.addStretch()
-
         layout.addLayout(range_layout)
 
         self.use_timeline_btn = QtWidgets.QPushButton("Use Timeline Range")
@@ -178,7 +211,7 @@ class AnimationNoiseWidget(QtWidgets.QWidget):
         return group
 
     def _build_attributes_section(self):
-        """Attributes and amplitude section."""
+        """Per-attribute amplitude and enable controls."""
         group = QtWidgets.QGroupBox("Attributes & Amplitude")
         layout = QtWidgets.QVBoxLayout()
 
@@ -220,13 +253,11 @@ class AnimationNoiseWidget(QtWidgets.QWidget):
             container_layout.setSpacing(4)
 
             for label, attr, default, min_val, max_val in attributes:
-                attr_widget = self._create_attribute_row(label, attr, default, min_val, max_val)
-                container_layout.addWidget(attr_widget)
+                container_layout.addWidget(self._create_attribute_row(label, attr, default, min_val, max_val))
 
             container.hide()
             layout.addWidget(container)
             self.attr_containers[group_name] = container
-
             master_cb.toggled.connect(lambda checked, g=group_name: self._on_master_toggle(g, checked))
             layout.addSpacing(8)
 
@@ -234,7 +265,7 @@ class AnimationNoiseWidget(QtWidgets.QWidget):
         return group
 
     def _create_attribute_row(self, label, attr, default, min_val, max_val):
-        """Create a single attribute row."""
+        """Create a single attribute row with amplitude controls and advanced params."""
         widget = QtWidgets.QWidget()
         h_layout = QtWidgets.QHBoxLayout(widget)
         h_layout.setContentsMargins(0, 0, 0, 0)
@@ -260,56 +291,40 @@ class AnimationNoiseWidget(QtWidgets.QWidget):
         advanced_layout.setContentsMargins(20, 5, 0, 5)
         advanced_layout.setSpacing(4)
 
-        freq_layout = QtWidgets.QHBoxLayout()
-        freq_layout.addWidget(QtWidgets.QLabel("Freq:"))
+        def _make_spin_slider_row(label_text, spin_widget, slider_widget):
+            row = QtWidgets.QHBoxLayout()
+            row.addWidget(QtWidgets.QLabel(label_text))
+            row.addWidget(spin_widget)
+            row.addWidget(slider_widget)
+            advanced_layout.addLayout(row)
+
         freq_spin = QtWidgets.QDoubleSpinBox()
-        freq_spin.setRange(0.01, 10.0)
-        freq_spin.setValue(1.0)
-        freq_spin.setSingleStep(0.1)
-        freq_spin.setMaximumWidth(60)
-        freq_layout.addWidget(freq_spin)
+        freq_spin.setRange(0.01, 10.0); freq_spin.setValue(1.0)
+        freq_spin.setSingleStep(0.1); freq_spin.setMaximumWidth(60)
         freq_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        freq_slider.setRange(1, 1000)
-        freq_slider.setValue(100)
-        freq_layout.addWidget(freq_slider)
-        advanced_layout.addLayout(freq_layout)
+        freq_slider.setRange(1, 1000); freq_slider.setValue(100)
+        _make_spin_slider_row("Freq:", freq_spin, freq_slider)
 
-        oct_layout = QtWidgets.QHBoxLayout()
-        oct_layout.addWidget(QtWidgets.QLabel("Oct:"))
         oct_spin = QtWidgets.QSpinBox()
-        oct_spin.setRange(1, 8)
-        oct_spin.setValue(3)
-        oct_spin.setMaximumWidth(60)
-        oct_layout.addWidget(oct_spin)
+        oct_spin.setRange(1, 8); oct_spin.setValue(3); oct_spin.setMaximumWidth(60)
         oct_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        oct_slider.setRange(1, 8)
-        oct_slider.setValue(3)
-        oct_layout.addWidget(oct_slider)
-        advanced_layout.addLayout(oct_layout)
+        oct_slider.setRange(1, 8); oct_slider.setValue(3)
+        _make_spin_slider_row("Oct:", oct_spin, oct_slider)
 
-        pers_layout = QtWidgets.QHBoxLayout()
-        pers_layout.addWidget(QtWidgets.QLabel("Pers:"))
         pers_spin = QtWidgets.QDoubleSpinBox()
-        pers_spin.setRange(0.0, 1.0)
-        pers_spin.setValue(0.5)
-        pers_spin.setSingleStep(0.1)
-        pers_spin.setMaximumWidth(60)
-        pers_layout.addWidget(pers_spin)
+        pers_spin.setRange(0.0, 1.0); pers_spin.setValue(0.5)
+        pers_spin.setSingleStep(0.1); pers_spin.setMaximumWidth(60)
         pers_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        pers_slider.setRange(0, 100)
-        pers_slider.setValue(50)
-        pers_layout.addWidget(pers_slider)
-        advanced_layout.addLayout(pers_layout)
+        pers_slider.setRange(0, 100); pers_slider.setValue(50)
+        _make_spin_slider_row("Pers:", pers_spin, pers_slider)
 
-        seed_layout = QtWidgets.QHBoxLayout()
-        seed_layout.addWidget(QtWidgets.QLabel("Seed:"))
         seed_spin = QtWidgets.QSpinBox()
-        seed_spin.setRange(0, 999999)
-        seed_spin.setValue(1234)
-        seed_spin.setMaximumWidth(80)
-        seed_layout.addWidget(seed_spin)
-        seed_layout.addStretch()
-        advanced_layout.addLayout(seed_layout)
+        seed_spin.setRange(0, 999999); seed_spin.setValue(1234); seed_spin.setMaximumWidth(80)
+        seed_row = QtWidgets.QHBoxLayout()
+        seed_row.addWidget(QtWidgets.QLabel("Seed:"))
+        seed_row.addWidget(seed_spin)
+        seed_row.addStretch()
+        advanced_layout.addLayout(seed_row)
 
         advanced_container.hide()
 
@@ -332,22 +347,18 @@ class AnimationNoiseWidget(QtWidgets.QWidget):
 
         slider.valueChanged.connect(lambda v, sb=spinbox: sb.setValue(v / 10.0))
         spinbox.valueChanged.connect(lambda v, sl=slider: sl.setValue(int(v * 10)))
-
         freq_slider.valueChanged.connect(lambda v, sb=freq_spin: sb.setValue(v / 100.0))
         freq_spin.valueChanged.connect(lambda v, sl=freq_slider: sl.setValue(int(v * 100)))
-
         oct_slider.valueChanged.connect(oct_spin.setValue)
         oct_spin.valueChanged.connect(oct_slider.setValue)
-
         pers_slider.valueChanged.connect(lambda v, sb=pers_spin: sb.setValue(v / 100.0))
         pers_spin.valueChanged.connect(lambda v, sl=pers_slider: sl.setValue(int(v * 100)))
-
         checkbox.toggled.connect(lambda checked, a=attr: self._update_attr_appearance(a, checked))
 
         return row_wrapper
 
     def _build_noise_params_section(self):
-        """Global noise parameters section with Noise Mode."""
+        """Global noise parameters including noise mode, type, and shape controls."""
         group = QtWidgets.QGroupBox("Noise Parameters (Global)")
         layout = QtWidgets.QVBoxLayout()
 
@@ -364,7 +375,6 @@ class AnimationNoiseWidget(QtWidgets.QWidget):
         global_layout = QtWidgets.QVBoxLayout(self.global_params_container)
         global_layout.setContentsMargins(0, 0, 0, 0)
 
-        # NOISE MODE DROPDOWN - NEW!
         mode_layout = QtWidgets.QHBoxLayout()
         mode_layout.addWidget(QtWidgets.QLabel("Noise Mode:"))
         self.noise_mode_combo = QtWidgets.QComboBox()
@@ -388,52 +398,38 @@ class AnimationNoiseWidget(QtWidgets.QWidget):
         type_layout.addStretch()
         global_layout.addLayout(type_layout)
 
-        global_layout.addWidget(QtWidgets.QLabel("Frequency:"))
-        freq_layout = QtWidgets.QHBoxLayout()
-        self.frequency_spinbox = QtWidgets.QDoubleSpinBox()
-        self.frequency_spinbox.setRange(0.01, 10.0)
-        self.frequency_spinbox.setValue(1.0)
-        self.frequency_spinbox.setSingleStep(0.1)
-        self.frequency_spinbox.setMaximumWidth(70)
-        self.frequency_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.frequency_slider.setRange(1, 1000)
-        self.frequency_slider.setValue(100)
-        freq_layout.addWidget(self.frequency_spinbox)
-        freq_layout.addWidget(self.frequency_slider)
-        global_layout.addLayout(freq_layout)
+        def _add_param_row(label_text, spin, slider):
+            global_layout.addWidget(QtWidgets.QLabel(label_text))
+            row = QtWidgets.QHBoxLayout()
+            row.addWidget(spin)
+            row.addWidget(slider)
+            global_layout.addLayout(row)
 
-        global_layout.addWidget(QtWidgets.QLabel("Octaves:"))
-        oct_layout = QtWidgets.QHBoxLayout()
+        self.frequency_spinbox = QtWidgets.QDoubleSpinBox()
+        self.frequency_spinbox.setRange(0.01, 10.0); self.frequency_spinbox.setValue(1.0)
+        self.frequency_spinbox.setSingleStep(0.1); self.frequency_spinbox.setMaximumWidth(70)
+        self.frequency_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.frequency_slider.setRange(1, 1000); self.frequency_slider.setValue(100)
+        _add_param_row("Frequency:", self.frequency_spinbox, self.frequency_slider)
+
         self.octaves_spinbox = QtWidgets.QSpinBox()
-        self.octaves_spinbox.setRange(1, 8)
-        self.octaves_spinbox.setValue(3)
+        self.octaves_spinbox.setRange(1, 8); self.octaves_spinbox.setValue(3)
         self.octaves_spinbox.setMaximumWidth(70)
         self.octaves_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.octaves_slider.setRange(1, 8)
-        self.octaves_slider.setValue(3)
-        oct_layout.addWidget(self.octaves_spinbox)
-        oct_layout.addWidget(self.octaves_slider)
-        global_layout.addLayout(oct_layout)
+        self.octaves_slider.setRange(1, 8); self.octaves_slider.setValue(3)
+        _add_param_row("Octaves:", self.octaves_spinbox, self.octaves_slider)
 
-        global_layout.addWidget(QtWidgets.QLabel("Persistence:"))
-        pers_layout = QtWidgets.QHBoxLayout()
         self.persistence_spinbox = QtWidgets.QDoubleSpinBox()
-        self.persistence_spinbox.setRange(0.0, 1.0)
-        self.persistence_spinbox.setValue(0.5)
-        self.persistence_spinbox.setSingleStep(0.1)
-        self.persistence_spinbox.setMaximumWidth(70)
+        self.persistence_spinbox.setRange(0.0, 1.0); self.persistence_spinbox.setValue(0.5)
+        self.persistence_spinbox.setSingleStep(0.1); self.persistence_spinbox.setMaximumWidth(70)
         self.persistence_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.persistence_slider.setRange(0, 100)
-        self.persistence_slider.setValue(50)
-        pers_layout.addWidget(self.persistence_spinbox)
-        pers_layout.addWidget(self.persistence_slider)
-        global_layout.addLayout(pers_layout)
+        self.persistence_slider.setRange(0, 100); self.persistence_slider.setValue(50)
+        _add_param_row("Persistence:", self.persistence_spinbox, self.persistence_slider)
 
         seed_layout = QtWidgets.QHBoxLayout()
         seed_layout.addWidget(QtWidgets.QLabel("Seed:"))
         self.seed_spinbox = QtWidgets.QSpinBox()
-        self.seed_spinbox.setRange(0, 999999)
-        self.seed_spinbox.setValue(1234)
+        self.seed_spinbox.setRange(0, 999999); self.seed_spinbox.setValue(1234)
         self.seed_spinbox.setMaximumWidth(100)
         seed_layout.addWidget(self.seed_spinbox)
         self.randomize_seed_btn = QtWidgets.QPushButton("Randomize")
@@ -447,7 +443,7 @@ class AnimationNoiseWidget(QtWidgets.QWidget):
         return group
 
     def _build_preview_section(self):
-        """Preview graph section."""
+        """Noise curve preview section."""
         group = QtWidgets.QGroupBox("Noise Preview")
         layout = QtWidgets.QVBoxLayout()
 
@@ -464,288 +460,334 @@ class AnimationNoiseWidget(QtWidgets.QWidget):
         return group
 
     def _build_action_buttons(self):
-        """Bottom action buttons."""
+        """Apply and remove layer action buttons."""
         widget = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(widget)
 
         self.apply_btn = QtWidgets.QPushButton("Apply Noise to Layer")
         self.apply_btn.setMinimumHeight(35)
-
         self.remove_btn = QtWidgets.QPushButton("Remove Selected Layer")
         self.remove_btn.setMinimumHeight(30)
 
         layout.addWidget(self.apply_btn)
         layout.addWidget(self.remove_btn)
-
         return widget
 
+    # --- Signal Connections ---
+
     def _connect_signals(self):
-        """Connect all UI signals."""
+        """Connect all UI signals to handlers."""
         self.refresh_btn.clicked.connect(self._on_refresh_selection)
 
         self.weight_slider.valueChanged.connect(lambda v: self.weight_spinbox.setValue(v / 100.0))
         self.weight_spinbox.valueChanged.connect(lambda v: self.weight_slider.setValue(int(v * 100)))
         self.weight_slider.valueChanged.connect(self._on_weight_changed)
         self.create_new_radio.toggled.connect(self._on_layer_mode_changed)
-
         self.use_timeline_btn.clicked.connect(self._refresh_timeline_range)
         self.advanced_checkbox.toggled.connect(self._on_advanced_mode_toggled)
 
         self.frequency_slider.valueChanged.connect(lambda v: self.frequency_spinbox.setValue(v / 100.0))
         self.frequency_spinbox.valueChanged.connect(lambda v: self.frequency_slider.setValue(int(v * 100)))
-
         self.octaves_slider.valueChanged.connect(self.octaves_spinbox.setValue)
         self.octaves_spinbox.valueChanged.connect(self.octaves_slider.setValue)
-
         self.persistence_slider.valueChanged.connect(lambda v: self.persistence_spinbox.setValue(v / 100.0))
         self.persistence_spinbox.valueChanged.connect(lambda v: self.persistence_slider.setValue(int(v * 100)))
 
         self.randomize_seed_btn.clicked.connect(self._randomize_seed)
         self.update_preview_btn.clicked.connect(self._update_preview)
 
-        for widget in [self.frequency_spinbox, self.octaves_spinbox, self.persistence_spinbox,
-                       self.seed_spinbox, self.noise_type_combo]:
-            if hasattr(widget, 'valueChanged'):
-                widget.valueChanged.connect(self._update_preview)
-            elif hasattr(widget, 'currentIndexChanged'):
-                widget.currentIndexChanged.connect(self._update_preview)
+        for widget in (self.frequency_spinbox, self.octaves_spinbox,
+                       self.persistence_spinbox, self.seed_spinbox):
+            widget.valueChanged.connect(self._update_preview)
+        self.noise_type_combo.currentIndexChanged.connect(self._update_preview)
 
         self.apply_btn.clicked.connect(self._on_apply_noise)
         self.remove_btn.clicked.connect(self._on_remove_layer)
 
-    def _apply_initial_styles(self):
-        """Apply consistent styling."""
-        for master_cb in self.master_checkboxes.values():
-            self._update_master_appearance(master_cb, False)
+        self.load_preset_btn.clicked.connect(self._on_load_preset)
+        self.save_preset_btn.clicked.connect(self._on_save_preset)
+        self.delete_preset_btn.clicked.connect(self._on_delete_preset)
 
-        for attr in self.attr_controls.keys():
-            self._update_attr_appearance(attr, False)
+    # --- Preset Handling ---
 
-    def _on_master_toggle(self, group_name, checked):
-        """Toggle all attributes in a group."""
-        container = self.attr_containers.get(group_name)
-        master_cb = self.master_checkboxes.get(group_name)
+    def _refresh_preset_list(self):
+        """Reload preset list from disk and repopulate the combo."""
+        self._preset_list = noise_preset_io.list_presets()
+        self.preset_combo.clear()
+        for preset in self._preset_list:
+            label = f"{preset['name']}  {'[built-in]' if preset['builtin'] else '[user]'}"
+            self.preset_combo.addItem(label)
+        self.delete_preset_btn.setEnabled(bool(self._preset_list))
 
-        if not container or not master_cb:
+    def _on_load_preset(self):
+        """Load the selected preset and apply it to the UI."""
+        idx = self.preset_combo.currentIndex()
+        if idx < 0 or idx >= len(self._preset_list):
+            return
+        try:
+            preset = noise_preset_io.load_preset(self._preset_list[idx]['path'])
+            self._apply_preset_to_ui(preset['settings'])
+            self._update_preview()
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "Load Failed", f"Could not load preset:\n{e}")
+
+    def _on_save_preset(self):
+        """Save current UI settings as a named user preset."""
+        name, ok = QtWidgets.QInputDialog.getText(
+            self, "Save Preset", "Preset name:", text="My Preset"
+        )
+        if not ok or not name.strip():
             return
 
-        self._update_master_appearance(master_cb, checked)
-        container.setVisible(checked)
+        desc, ok = QtWidgets.QInputDialog.getText(
+            self, "Save Preset", "Description (optional):"
+        )
+        if not ok:
+            return
 
-        group_attrs = {
-            'translate': ['tx', 'ty', 'tz'],
-            'rotate': ['rx', 'ry', 'rz'],
-            'scale': ['sx', 'sy', 'sz']
+        settings = self._collect_noise_params()
+        settings['attr_params'] = {
+            attr: {'amplitude': controls['spinbox'].value()}
+            for attr, controls in self.attr_controls.items()
         }
+        settings['randomize_per_object'] = self.randomize_per_object_cb.isChecked()
 
-        for attr in group_attrs.get(group_name, []):
-            if attr in self.attr_controls:
-                self.attr_controls[attr]['checkbox'].setChecked(checked)
+        try:
+            noise_preset_io.save_preset(name.strip(), settings, desc.strip())
+            self._refresh_preset_list()
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "Save Failed", f"Could not save preset:\n{e}")
+
+    def _on_delete_preset(self):
+        """Delete the selected user preset."""
+        idx = self.preset_combo.currentIndex()
+        if idx < 0 or idx >= len(self._preset_list):
+            return
+        preset = self._preset_list[idx]
+        if preset['builtin']:
+            QtWidgets.QMessageBox.information(self, "Cannot Delete", "Built-in presets cannot be deleted.")
+            return
+        reply = QtWidgets.QMessageBox.question(
+            self, "Delete Preset",
+            f"Delete preset '{preset['name']}'?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
+        )
+        if reply != QtWidgets.QMessageBox.Yes:
+            return
+        try:
+            noise_preset_io.delete_preset(preset['path'])
+            self._refresh_preset_list()
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "Delete Failed", f"Could not delete preset:\n{e}")
+
+    def _apply_preset_to_ui(self, settings):
+        """Populate all UI controls from a preset settings dict."""
+        noise_type = settings.get('noise_type', 'Perlin')
+        idx = self.noise_type_combo.findText(noise_type)
+        if idx >= 0:
+            self.noise_type_combo.setCurrentIndex(idx)
+
+        noise_mode = settings.get('noise_mode', 'Additive')
+        idx = self.noise_mode_combo.findText(noise_mode)
+        if idx >= 0:
+            self.noise_mode_combo.setCurrentIndex(idx)
+
+        self.frequency_spinbox.setValue(settings.get('frequency', 1.0))
+        self.octaves_spinbox.setValue(settings.get('octaves', 3))
+        self.persistence_spinbox.setValue(settings.get('persistence', 0.5))
+        self.seed_spinbox.setValue(settings.get('seed', 1234))
+
+        if 'randomize_per_object' in settings:
+            self.randomize_per_object_cb.setChecked(settings['randomize_per_object'])
+
+        attr_params = settings.get('attr_params', {})
+        if attr_params:
+            attr_to_group = {
+                'tx': 'translate', 'ty': 'translate', 'tz': 'translate',
+                'rx': 'rotate',    'ry': 'rotate',    'rz': 'rotate',
+                'sx': 'scale',     'sy': 'scale',     'sz': 'scale',
+            }
+            groups_to_enable = set()
+            for attr, params in attr_params.items():
+                if attr not in self.attr_controls:
+                    continue
+                amplitude = params.get('amplitude', 0.0)
+                controls = self.attr_controls[attr]
+                controls['spinbox'].setValue(amplitude)
+                if amplitude > 0.0:
+                    controls['checkbox'].setChecked(True)
+                    groups_to_enable.add(attr_to_group.get(attr))
+
+            for group_name in groups_to_enable:
+                if group_name and group_name in self.master_checkboxes:
+                    self.master_checkboxes[group_name].setChecked(True)
+
+    # --- Appearance ---
+
+    def _apply_initial_styles(self):
+        """Set initial disabled appearance for all attribute controls."""
+        for master_cb in self.master_checkboxes.values():
+            self._update_master_appearance(master_cb, False)
+        for attr in self.attr_controls:
+            self._update_attr_appearance(attr, False)
 
     def _update_master_appearance(self, master_checkbox, enabled):
-        """Update master checkbox appearance."""
-        if enabled:
-            master_checkbox.setStyleSheet("font-weight: bold; color: #e0e0e0;")
-        else:
-            master_checkbox.setStyleSheet(f"font-weight: bold; color: {TEXT_DISABLED_COLOR.name()};")
+        """Update master checkbox text color based on enabled state."""
+        color = TEXT_COLOR.name() if enabled else TEXT_DISABLED_COLOR.name()
+        master_checkbox.setStyleSheet(f"font-weight: bold; color: {color};")
 
     def _update_attr_appearance(self, attr, enabled):
-        """Update attribute row appearance."""
+        """Update attribute row enabled state and advanced container visibility."""
         controls = self.attr_controls.get(attr)
         if not controls:
             return
+        controls['checkbox'].setStyleSheet(
+            f"color: {TEXT_COLOR.name()};" if enabled else f"color: {TEXT_DISABLED_COLOR.name()};"
+        )
+        controls['spinbox'].setEnabled(enabled)
+        controls['slider'].setEnabled(enabled)
+        controls['advanced_container'].setVisible(self.advanced_checkbox.isChecked() and enabled)
 
-        checkbox = controls['checkbox']
-        spinbox = controls['spinbox']
-        slider = controls['slider']
+    # --- Event Handlers ---
 
-        if enabled:
-            checkbox.setStyleSheet(f"color: {TEXT_COLOR.name()};")
-            spinbox.setEnabled(True)
-            slider.setEnabled(True)
-        else:
-            checkbox.setStyleSheet(f"color: {TEXT_DISABLED_COLOR.name()};")
-            spinbox.setEnabled(False)
-            slider.setEnabled(False)
-
-        if self.advanced_checkbox.isChecked() and enabled:
-            controls['advanced_container'].setVisible(True)
-        else:
-            controls['advanced_container'].setVisible(False)
+    def _on_master_toggle(self, group_name, checked):
+        """Show/hide attribute group container and sync child checkboxes."""
+        container = self.attr_containers.get(group_name)
+        master_cb = self.master_checkboxes.get(group_name)
+        if not container or not master_cb:
+            return
+        self._update_master_appearance(master_cb, checked)
+        container.setVisible(checked)
+        for attr in {'translate': ['tx', 'ty', 'tz'],
+                     'rotate': ['rx', 'ry', 'rz'],
+                     'scale': ['sx', 'sy', 'sz']}.get(group_name, []):
+            if attr in self.attr_controls:
+                self.attr_controls[attr]['checkbox'].setChecked(checked)
 
     def _on_advanced_mode_toggled(self, checked):
-        """Toggle advanced mode."""
+        """Toggle between global and per-attribute parameter controls."""
         self.global_params_container.setVisible(not checked)
         self.global_note.setVisible(not checked)
-
         for attr, controls in self.attr_controls.items():
-            is_checked = controls['checkbox'].isChecked()
-            controls['advanced_container'].setVisible(checked and is_checked)
-
+            controls['advanced_container'].setVisible(checked and controls['checkbox'].isChecked())
         self._update_preview()
 
     def _on_refresh_selection(self):
-        """Refresh selected objects."""
+        """Update selected objects from Maya viewport."""
         self.selected_objects = cmds.ls(selection=True, type='transform') or []
-        count = len(self.selected_objects)
-        self.selected_label.setText(f"Selected Objects: {count}")
-
-        if count == 0:
+        self.selected_label.setText(f"Selected Objects: {len(self.selected_objects)}")
+        if not self.selected_objects:
             QtWidgets.QMessageBox.warning(self, "No Selection", "Please select objects in Maya viewport.")
 
     def _on_layer_mode_changed(self):
-        """Toggle layer name field."""
+        """Toggle layer name field vs existing layer combo."""
         create_new = self.create_new_radio.isChecked()
         self.layer_name_field.setEnabled(create_new)
         self.layer_combo.setEnabled(not create_new)
 
     def _on_weight_changed(self, value):
-        """Update layer weight."""
+        """Update current layer weight in core."""
         if self.current_layer:
-            weight = value / 100.0
-            self.core.set_layer_weight(self.current_layer, weight)
+            self.core.set_layer_weight(self.current_layer, value / 100.0)
 
     def _refresh_timeline_range(self):
-        """Get timeline range from Maya."""
+        """Sync frame range spinboxes with Maya's timeline."""
         try:
-            start = int(cmds.playbackOptions(q=True, minTime=True))
-            end = int(cmds.playbackOptions(q=True, maxTime=True))
-            self.start_frame_spinbox.setValue(start)
-            self.end_frame_spinbox.setValue(end)
-        except:
+            self.start_frame_spinbox.setValue(int(cmds.playbackOptions(q=True, minTime=True)))
+            self.end_frame_spinbox.setValue(int(cmds.playbackOptions(q=True, maxTime=True)))
+        except Exception:
             pass
 
     def _randomize_seed(self):
-        """Generate random seed."""
-        new_seed = random.randint(0, 999999)
-        self.seed_spinbox.setValue(new_seed)
-
+        """Randomize global seed and all per-attribute seeds."""
+        self.seed_spinbox.setValue(random.randint(0, 999999))
         if self.advanced_checkbox.isChecked():
             for controls in self.attr_controls.values():
                 controls['seed_spin'].setValue(random.randint(0, 999999))
 
+    # --- Preview ---
+
     def _update_preview(self):
-        """Update preview graph."""
+        """Regenerate and display the noise preview curve(s)."""
         start = self.start_frame_spinbox.value()
         end = self.end_frame_spinbox.value()
         samples = min(500, end - start + 1)
+        frames = [start + (end - start) * (i / float(max(samples - 1, 1))) for i in range(samples)]
 
-        advanced_mode = self.advanced_checkbox.isChecked()
-
-        if advanced_mode:
+        if self.advanced_checkbox.isChecked():
             curves_data = []
-
             for attr, controls in self.attr_controls.items():
                 if not controls['checkbox'].isChecked():
                     continue
-
                 params = self._collect_noise_params(controls)
-                amplitude = params.pop('amplitude')  # remove amplitude before passing to _generate_noise_value
-
-                x_values = []
-                y_values = []
-
-                for i in range(samples):
-                    frame = start + (end - start) * (i / float(samples - 1))
-                    noise_val = self._generate_noise_value(
-                        frame,
-                        noise_type=params['noise_type'],
-                        frequency=params['frequency'],
-                        octaves=params['octaves'],
-                        persistence=params['persistence'],
-                        seed=params['seed']
-                    )
-                    y_values.append(noise_val * amplitude)
-                    x_values.append(frame)
-
+                amplitude = params.pop('amplitude')
+                y_values = [
+                    self._generate_noise_value(f, params['noise_type'], params['frequency'],
+                                               params['octaves'], params['persistence'], params['seed']) * amplitude
+                    for f in frames
+                ]
                 curves_data.append({
-                    'x': x_values,
-                    'y': y_values,
+                    'x': frames, 'y': y_values,
                     'label': controls['label'],
                     'color': AXIS_COLORS.get(attr, QtGui.QColor(200, 200, 200))
                 })
-
             self.preview_canvas.set_multi_data(curves_data)
         else:
-            # global mode
             params = self._collect_noise_params()
-            x_values = []
-            y_values = []
-
-            for i in range(samples):
-                frame = start + (end - start) * (i / float(samples - 1))
-                noise_val = self._generate_noise_value(
-                    frame,
-                    noise_type=params['noise_type'],
-                    frequency=params['frequency'],
-                    octaves=params['octaves'],
-                    persistence=params['persistence'],
-                    seed=params['seed']
-                )
-                y_values.append(noise_val)
-
-                x_values.append(frame)
-
-            self.preview_canvas.set_data(x_values, y_values)
+            y_values = [
+                self._generate_noise_value(f, params['noise_type'], params['frequency'],
+                                           params['octaves'], params['persistence'], params['seed'])
+                for f in frames
+            ]
+            self.preview_canvas.set_data(frames, y_values)
 
     def _generate_noise_value(self, frame, noise_type, frequency, octaves, persistence, seed):
-        """Generate noise value for preview."""
+        """Generate a preview noise value for a given frame."""
         if noise_type == "Sine Wave":
             return math.sin(frame * frequency * 0.1)
-        elif noise_type == "Perlin":
-            return self._perlin_noise(frame * frequency, octaves, persistence, seed)
-        else:
-            return self._perlin_noise(frame * frequency * 0.8, octaves, persistence, seed)
+        return self._perlin_noise(
+            frame * frequency if noise_type == "Perlin" else frame * frequency * 0.8,
+            octaves, persistence, seed
+        )
 
     def _perlin_noise(self, x, octaves, persistence, seed):
-        """Multi-octave noise."""
-        total = 0.0
-        frequency = 1.0
-        amplitude = 1.0
-        max_value = 0.0
-
+        """Layered 1D Perlin-style noise."""
+        total, freq, amp, max_val = 0.0, 1.0, 1.0, 0.0
         for _ in range(octaves):
-            val = self._noise1d(x * frequency + seed)
-            total += val * amplitude
-            max_value += amplitude
-            amplitude *= persistence
-            frequency *= 2.0
-
-        return total / max_value if max_value != 0 else 0
+            total += self._noise1d(x * freq + seed) * amp
+            max_val += amp
+            amp *= persistence
+            freq *= 2.0
+        return total / max_val if max_val else 0.0
 
     def _noise1d(self, x):
-        """1D noise function."""
+        """Smooth 1D noise using sine-based hashing and Hermite interpolation."""
         i = int(x)
         f = x - i
         f = f * f * (3.0 - 2.0 * f)
-
         a = math.sin(i * 12.9898 + 78.233) * 43758.5453
         b = math.sin((i + 1) * 12.9898 + 78.233) * 43758.5453
+        a -= math.floor(a)
+        b -= math.floor(b)
+        return (a * (1 - f) + b * f) * 2.0 - 1.0
 
-        a = a - math.floor(a)
-        b = b - math.floor(b)
-
-        return (a * (1.0 - f) + b * f) * 2.0 - 1.0
+    # --- Apply / Remove ---
 
     def _on_apply_noise(self):
-        """Apply noise using core logic."""
+        """Validate inputs and apply noise via core."""
         if not self.selected_objects:
             QtWidgets.QMessageBox.warning(self, "No Selection",
                                           "Please select objects first and click 'Refresh Selection'.")
             return
 
-        selected_attrs = [attr for attr, controls in self.attr_controls.items()
-                          if controls['checkbox'].isChecked()]
-
+        selected_attrs = [a for a, c in self.attr_controls.items() if c['checkbox'].isChecked()]
         if not selected_attrs:
             QtWidgets.QMessageBox.warning(self, "No Attributes",
-                                          "Please select at least one attribute (enable a master checkbox).")
+                                          "Please select at least one attribute.")
             return
 
         start_frame = self.start_frame_spinbox.value()
         end_frame = self.end_frame_spinbox.value()
-        sample_rate = self.sample_rate_spinbox.value()
-
         if end_frame < start_frame:
             QtWidgets.QMessageBox.warning(self, "Invalid Range",
                                           "End frame must be greater than start frame.")
@@ -754,65 +796,40 @@ class AnimationNoiseWidget(QtWidgets.QWidget):
         if self.create_new_radio.isChecked():
             layer_name = self.layer_name_field.text().strip()
             layer_mode = 'create_new'
-
             if not layer_name:
-                QtWidgets.QMessageBox.warning(self, "Invalid Layer Name",
-                                              "Please enter a valid layer name.")
+                QtWidgets.QMessageBox.warning(self, "Invalid Layer Name", "Please enter a valid layer name.")
                 return
         else:
             layer_name = self.layer_combo.currentText()
             layer_mode = 'use_existing'
-
             if not layer_name or layer_name == "No layers available":
                 QtWidgets.QMessageBox.warning(self, "No Layer Selected",
                                               "Please select an existing layer or create a new one.")
                 return
 
         advanced_mode = self.advanced_checkbox.isChecked()
-
-        # Global parameters WITH noise_mode
         global_params = self._collect_noise_params()
-        global_params['noise_mode'] = self.noise_mode_combo.currentText()  # explicitly include noise mode
+        global_params['noise_mode'] = self.noise_mode_combo.currentText()
 
-        # Per-attribute parameters
-        attr_params = {}
-        for attr, controls in self.attr_controls.items():
-            if attr in selected_attrs:
-                if advanced_mode:
-                    attr_params[attr] = self._collect_noise_params(controls)
-                else:
-                    attr_params[attr] = {'amplitude': controls['spinbox'].value()}
-
-        # Global params
-
-
-        params = {
-            'layer_name': layer_name,
-            'layer_mode': layer_mode,
-            'start_frame': start_frame,
-            'end_frame': end_frame,
-            'sample_rate': sample_rate,
-            'advanced_mode': advanced_mode,
-            'randomize_per_object': self.randomize_per_object_cb.isChecked(),
-            'noise_mode': global_params['noise_mode'],
-            'noise_type': global_params['noise_type'],
-            'global_params': global_params,
-            'attr_params': attr_params
+        attr_params = {
+            attr: self._collect_noise_params(self.attr_controls[attr]) if advanced_mode
+            else {'amplitude': self.attr_controls[attr]['spinbox'].value()}
+            for attr in selected_attrs
         }
 
-        total_frames = ((end_frame - start_frame) // sample_rate) + 1
-        total_keys = total_frames * len(selected_attrs) * len(self.selected_objects)
+        sample_rate = self.sample_rate_spinbox.value()
+        total_keys = (((end_frame - start_frame) // sample_rate) + 1) * len(selected_attrs) * len(self.selected_objects)
 
-        reply = QtWidgets.QMessageBox.question(self, "Apply Noise",
-                                               f"This will create:\n"
-                                               f"• {total_keys} keyframes\n"
-                                               f"• On {len(self.selected_objects)} object(s)\n"
-                                               f"• Across {len(selected_attrs)} attribute(s)\n"
-                                               f"• From frame {start_frame} to {end_frame}\n"
-                                               f"• Mode: {self.noise_mode_combo.currentText()}\n\n"
-                                               f"Continue?",
-                                               QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
-
+        reply = QtWidgets.QMessageBox.question(
+            self, "Apply Noise",
+            f"This will create:\n"
+            f"  {total_keys} keyframes\n"
+            f"  {len(self.selected_objects)} object(s)\n"
+            f"  {len(selected_attrs)} attribute(s)\n"
+            f"  Frames {start_frame} to {end_frame}\n"
+            f"  Mode: {self.noise_mode_combo.currentText()}\n\nContinue?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
+        )
         if reply == QtWidgets.QMessageBox.No:
             return
 
@@ -827,7 +844,23 @@ class AnimationNoiseWidget(QtWidgets.QWidget):
             QtWidgets.QApplication.processEvents()
             return not progress.wasCanceled()
 
-        result = self.core.apply_noise(self.selected_objects, selected_attrs, params, progress_callback)
+        result = self.core.apply_noise(
+            self.selected_objects, selected_attrs,
+            {
+                'layer_name': layer_name,
+                'layer_mode': layer_mode,
+                'start_frame': start_frame,
+                'end_frame': end_frame,
+                'sample_rate': sample_rate,
+                'advanced_mode': advanced_mode,
+                'randomize_per_object': self.randomize_per_object_cb.isChecked(),
+                'noise_mode': global_params['noise_mode'],
+                'noise_type': global_params['noise_type'],
+                'global_params': global_params,
+                'attr_params': attr_params
+            },
+            progress_callback
+        )
 
         progress.close()
 
@@ -840,55 +873,52 @@ class AnimationNoiseWidget(QtWidgets.QWidget):
             QtWidgets.QMessageBox.warning(self, "Failed", result['message'])
 
     def _on_remove_layer(self):
-        """Remove layer using core logic."""
-        if self.add_existing_radio.isChecked():
-            layer_name = self.layer_combo.currentText()
-        else:
-            layer_name = self.current_layer
-
+        """Remove the selected or current animation layer."""
+        layer_name = self.layer_combo.currentText() if self.add_existing_radio.isChecked() else self.current_layer
         if not layer_name or layer_name == "No layers available":
             QtWidgets.QMessageBox.warning(self, "No Layer", "No layer selected to remove.")
             return
 
-        reply = QtWidgets.QMessageBox.question(self, "Remove Layer",
-                                               f"Are you sure you want to delete layer '{layer_name}'?\nThis cannot be undone.",
-                                               QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
+        reply = QtWidgets.QMessageBox.question(
+            self, "Remove Layer",
+            f"Delete layer '{layer_name}'? This cannot be undone.",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
+        )
+        if reply != QtWidgets.QMessageBox.Yes:
+            return
 
-        if reply == QtWidgets.QMessageBox.Yes:
-            result = self.core.remove_layer(layer_name)
-
-            if result['success']:
-                if self.current_layer == layer_name:
-                    self.current_layer = None
-                self._refresh_layer_list()
-                QtWidgets.QMessageBox.information(self, "Success", result['message'])
-            else:
-                QtWidgets.QMessageBox.critical(self, "Error", result['message'])
+        result = self.core.remove_layer(layer_name)
+        if result['success']:
+            if self.current_layer == layer_name:
+                self.current_layer = None
+            self._refresh_layer_list()
+            QtWidgets.QMessageBox.information(self, "Success", result['message'])
+        else:
+            QtWidgets.QMessageBox.critical(self, "Error", result['message'])
 
     def _refresh_layer_list(self):
-        """Refresh layer list."""
+        """Refresh the layer combo from Maya's current anim layers."""
         self.layer_combo.clear()
         layers = self.core.get_animation_layers()
+        self.layer_combo.addItems(layers if layers else ["No layers available"])
 
-        if layers:
-            self.layer_combo.addItems(layers)
-        else:
-            self.layer_combo.addItem("No layers available")
+    # --- Params Collection ---
 
     def _collect_noise_params(self, controls=None):
         """
-        Collect noise parameters for either global or per-attribute.
+        Collect noise parameters from global or per-attribute controls.
 
-        :param controls: dict of attribute controls, or None for global
-        :return: dict of noise parameters
+        Args:
+            controls (dict): Attribute control dict, or None for global params.
+
+        Returns:
+            dict: Noise parameter values.
         """
         params = {
             'noise_mode': self.noise_mode_combo.currentText(),
             'noise_type': self.noise_type_combo.currentText(),
         }
-
         if controls:
-            # Per-attribute advanced controls
             params.update({
                 'frequency': controls['freq_spin'].value(),
                 'octaves': controls['oct_spin'].value(),
@@ -897,19 +927,17 @@ class AnimationNoiseWidget(QtWidgets.QWidget):
                 'amplitude': controls['spinbox'].value()
             })
         else:
-            # Global controls
             params.update({
                 'frequency': self.frequency_spinbox.value(),
                 'octaves': self.octaves_spinbox.value(),
                 'persistence': self.persistence_spinbox.value(),
                 'seed': self.seed_spinbox.value()
             })
-
         return params
 
 
 class NoisePreviewCanvas(QtWidgets.QWidget):
-    """Custom widget for drawing noise preview graph."""
+    """Custom widget for rendering a noise curve preview graph."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -919,21 +947,21 @@ class NoisePreviewCanvas(QtWidgets.QWidget):
         self.setMinimumSize(400, 220)
 
     def set_data(self, x_data, y_data):
-        """Update single curve data."""
+        """Set single curve data and trigger repaint."""
         self.x_data = x_data
         self.y_data = y_data
         self.multi_curves = []
         self.update()
 
     def set_multi_data(self, curves_data):
-        """Update multi-curve data."""
+        """Set multiple curve data and trigger repaint."""
         self.multi_curves = curves_data
         self.x_data = []
         self.y_data = []
         self.update()
 
     def paintEvent(self, event):
-        """Draw noise curves."""
+        """Render the noise preview graph."""
         painter = QtGui.QPainter(self)
         painter.setRenderHint(QtGui.QPainter.Antialiasing)
         painter.fillRect(self.rect(), BG_COLOR)
@@ -945,156 +973,105 @@ class NoisePreviewCanvas(QtWidgets.QWidget):
         else:
             painter.setPen(TEXT_DISABLED_COLOR)
             painter.drawText(self.rect(), QtCore.Qt.AlignCenter,
-                             "Click 'Update Preview' to see additive offset curve")
+                             "Click 'Update Preview' to see noise curve")
 
     def _draw_multi_curves(self, painter):
-        """Draw multiple curves."""
+        """Draw multiple colored curves with shared axes."""
         if not self.multi_curves:
             return
-
-        w = self.width()
-        h = self.height()
-
-        all_x = []
-        all_y = []
-        for curve in self.multi_curves:
-            all_x.extend(curve['x'])
-            all_y.extend(curve['y'])
-
+        all_x = [x for c in self.multi_curves for x in c['x']]
+        all_y = [y for c in self.multi_curves for y in c['y']]
         if not all_x or not all_y:
             return
 
-        x_min = min(all_x)
-        x_max = max(all_x)
-        y_min = min(all_y)
-        y_max = max(all_y)
+        x_min, x_max = min(all_x), max(all_x)
+        y_min, y_max = min(all_y), max(all_y)
+        if y_max == y_min: y_max = y_min + 1.0
+        if x_max == x_min: x_max = x_min + 1.0
 
-        if y_max == y_min:
-            y_max = y_min + 1.0
-        if x_max == x_min:
-            x_max = x_min + 1.0
-
-        margins = self._draw_grid(painter, w, h, 20, y_min, y_max)
-        left_margin, top_margin, right_margin, bottom_margin = margins
-
+        margins = self._draw_grid(painter, y_min, y_max)
         for curve in self.multi_curves:
-            color = curve.get('color', QtGui.QColor(100, 200, 255))
-            self._draw_curve_path_with_margins(painter, curve['x'], curve['y'],
-                                               x_min, x_max, y_min, y_max,
-                                               w, h, left_margin, top_margin, right_margin, bottom_margin, color)
-
-        self._draw_legend(painter, self.multi_curves, w, h)
+            self._draw_curve_path(painter, curve['x'], curve['y'],
+                                  x_min, x_max, y_min, y_max, margins,
+                                  curve.get('color', QtGui.QColor(100, 200, 255)))
+        self._draw_legend(painter, self.multi_curves)
 
     def _draw_single_curve(self, painter, x_data, y_data, color):
-        """Draw single curve."""
-        w = self.width()
-        h = self.height()
+        """Draw a single curve with its own axes."""
+        x_min, x_max = min(x_data), max(x_data)
+        y_min, y_max = min(y_data), max(y_data)
+        if y_max == y_min: y_max = y_min + 1.0
+        if x_max == x_min: x_max = x_min + 1.0
 
-        x_min = min(x_data)
-        x_max = max(x_data)
-        y_min = min(y_data)
-        y_max = max(y_data)
+        margins = self._draw_grid(painter, y_min, y_max)
+        self._draw_curve_path(painter, x_data, y_data, x_min, x_max, y_min, y_max, margins, color)
 
-        if y_max == y_min:
-            y_max = y_min + 1.0
-        if x_max == x_min:
-            x_max = x_min + 1.0
-
-        margins = self._draw_grid(painter, w, h, 20, y_min, y_max)
-        left_margin, top_margin, right_margin, bottom_margin = margins
-        self._draw_curve_path_with_margins(painter, x_data, y_data, x_min, x_max, y_min, y_max,
-                                           w, h, left_margin, top_margin, right_margin, bottom_margin, color)
-
-    def _draw_grid(self, painter, w, h, base_margin, y_min, y_max):
-        """Draw grid with axes labels."""
-        left_margin = 20
-        bottom_margin = 35
-        top_margin = 15
-        right_margin = 20
+    def _draw_grid(self, painter, y_min, y_max):
+        """Draw background grid lines, axis labels, and zero line."""
+        w, h = self.width(), self.height()
+        lm, tm, rm, bm = 20, 15, 20, 35
 
         painter.setPen(BORDER_COLOR)
         for i in range(5):
-            y = top_margin + (h - top_margin - bottom_margin) * i / 4
-            painter.drawLine(left_margin, int(y), w - right_margin, int(y))
+            y = tm + (h - tm - bm) * i / 4
+            painter.drawLine(lm, int(y), w - rm, int(y))
 
         if y_min <= 0 <= y_max:
-            zero_y = top_margin + (h - top_margin - bottom_margin) * (1.0 - (0 - y_min) / (y_max - y_min))
-            if top_margin <= zero_y <= h - bottom_margin:
+            zero_y = tm + (h - tm - bm) * (1.0 - (0 - y_min) / (y_max - y_min))
+            if tm <= zero_y <= h - bm:
                 painter.setPen(QtGui.QPen(TEXT_DISABLED_COLOR, 2, QtCore.Qt.DashLine))
-                painter.drawLine(left_margin, int(zero_y), w - right_margin, int(zero_y))
+                painter.drawLine(lm, int(zero_y), w - rm, int(zero_y))
 
         painter.setPen(TEXT_COLOR)
         font = painter.font()
         font.setPointSize(9)
         painter.setFont(font)
-
         painter.save()
         painter.translate(12, h / 2)
         painter.rotate(-90)
         painter.drawText(-60, 0, 120, 20, QtCore.Qt.AlignCenter, "Additive Offset")
         painter.restore()
-
-        painter.drawText(left_margin, h - 20, w - left_margin - right_margin, 15,
-                         QtCore.Qt.AlignCenter, "Frame")
+        painter.drawText(lm, h - 20, w - lm - rm, 15, QtCore.Qt.AlignCenter, "Frame")
 
         font.setPointSize(8)
         painter.setFont(font)
         painter.setPen(TEXT_DISABLED_COLOR)
+        painter.drawText(lm - 42, tm - 2, 38, 15, QtCore.Qt.AlignRight | QtCore.Qt.AlignTop, f"{y_max:.1f}")
+        painter.drawText(lm - 42, h // 2 - 7, 38, 15, QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter, "0.0")
+        painter.drawText(lm - 42, h - bm - 10, 38, 15, QtCore.Qt.AlignRight | QtCore.Qt.AlignBottom, f"{y_min:.1f}")
 
-        painter.drawText(left_margin - 42, top_margin - 2, 38, 15,
-                         QtCore.Qt.AlignRight | QtCore.Qt.AlignTop, f"{y_max:.1f}")
-        painter.drawText(left_margin - 42, h / 2 - 7, 38, 15,
-                         QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter, "0.0")
-        painter.drawText(left_margin - 42, h - bottom_margin - 10, 38, 15,
-                         QtCore.Qt.AlignRight | QtCore.Qt.AlignBottom, f"{y_min:.1f}")
+        all_x = ([x for c in self.multi_curves for x in c['x']] if self.multi_curves else self.x_data)
+        if all_x:
+            x_min, x_max = min(all_x), max(all_x)
+            painter.drawText(lm - 10, h - bm + 10, 40, 15, QtCore.Qt.AlignLeft, f"{int(x_min)}")
+            painter.drawText(w - rm - 30, h - bm + 10, 40, 15, QtCore.Qt.AlignRight, f"{int(x_max)}")
 
-        if len(self.x_data) > 0 or len(self.multi_curves) > 0:
-            if self.multi_curves and len(self.multi_curves) > 0:
-                x_min = min(min(c['x']) for c in self.multi_curves)
-                x_max = max(max(c['x']) for c in self.multi_curves)
-            else:
-                x_min = min(self.x_data) if self.x_data else 0
-                x_max = max(self.x_data) if self.x_data else 100
+        return lm, tm, rm, bm
 
-            painter.drawText(left_margin - 10, h - bottom_margin + 10, 40, 15,
-                             QtCore.Qt.AlignLeft, f"{int(x_min)}")
-            painter.drawText(w - right_margin - 30, h - bottom_margin + 10, 40, 15,
-                             QtCore.Qt.AlignRight, f"{int(x_max)}")
+    def _draw_curve_path(self, painter, x_data, y_data, x_min, x_max, y_min, y_max, margins, color):
+        """Draw a single curve path within the given margins."""
+        lm, tm, rm, bm = margins
+        w, h = self.width(), self.height()
+        gw = w - lm - rm
+        gh = h - tm - bm
 
-        return left_margin, top_margin, right_margin, bottom_margin
-
-    def _draw_curve_path_with_margins(self, painter, x_data, y_data, x_min, x_max, y_min, y_max,
-                                      w, h, left_margin, top_margin, right_margin, bottom_margin, color):
-        """Draw curve path with proper margins."""
         painter.setPen(QtGui.QPen(color, 2))
         path = QtGui.QPainterPath()
-
-        graph_width = w - left_margin - right_margin
-        graph_height = h - top_margin - bottom_margin
-
         for i, (x, y) in enumerate(zip(x_data, y_data)):
-            px = left_margin + graph_width * (x - x_min) / (x_max - x_min)
-            py = top_margin + graph_height * (1.0 - (y - y_min) / (y_max - y_min))
-
+            px = lm + gw * (x - x_min) / (x_max - x_min)
+            py = tm + gh * (1.0 - (y - y_min) / (y_max - y_min))
             if i == 0:
                 path.moveTo(px, py)
             else:
                 path.lineTo(px, py)
-
         painter.drawPath(path)
 
-    def _draw_legend(self, painter, curves, w, h):
-        """Draw legend."""
-        legend_x = w - 120
-        legend_y = 10
-        line_height = 16
-
+    def _draw_legend(self, painter, curves):
+        """Draw a color-coded legend for multi-curve display."""
+        legend_x = self.width() - 120
         painter.setFont(QtGui.QFont("Arial", 8))
-
         for i, curve in enumerate(curves):
-            y = legend_y + i * line_height
+            y = 10 + i * 16
             painter.fillRect(legend_x, y + 2, 12, 12, curve['color'])
             painter.setPen(TEXT_COLOR)
             painter.drawText(legend_x + 16, y + 12, curve['label'])
-
-
