@@ -73,10 +73,6 @@ class ReAnimateToolController(QtCore.QObject):
         u.load_mapping_button.clicked.connect(self.load_mapping)
         u.about_btn.clicked.connect(self.show_about)
         u.help_btn.clicked.connect(self.show_help)
-        u.load_pose_btn.clicked.connect(self.load_pose_to_target)
-        u.save_anim_btn.clicked.connect(self.save_source_animation)
-        u.apply_anim_btn.clicked.connect(self.apply_animation_to_target)
-        u.preview_pose_btn.clicked.connect(self.preview_pose)
 
     # --- Rig Selection ---
 
@@ -254,47 +250,7 @@ class ReAnimateToolController(QtCore.QObject):
         json_io.save_pose(self.target_joints, path, frame=self.ui.bind_pose_spin.value(), pose_type="target_pose")
         cmd.inViewMessage(amg="Saved target pose", pos='midCenter', fade=True)
 
-    def load_pose_to_target(self):
-        """Load a pose file and apply it to the target rig."""
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self.ui, "Load Pose", "", "JSON Files (*.json)")
-        if not path:
-            return
-        data = json_io.load_pose(path)
-        mapping = {m["source"]: m["target"] for m in self.model.get_mappings()}
-        json_io.apply_pose(data, mapping)
-        cmd.inViewMessage(amg="Applied pose to target", pos='midCenter', fade=True)
 
-    def save_source_animation(self):
-        """Save the source rig animation to a JSON file."""
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(self.ui, "Save Source Animation", "", "JSON Files (*.json)")
-        if not path:
-            return
-        json_io.save_animation(
-            self.source_joints, path,
-            start=int(cmd.playbackOptions(q=True, min=True)),
-            end=int(cmd.playbackOptions(q=True, max=True))
-        )
-        cmd.inViewMessage(amg="Saved source animation", pos='midCenter', fade=True)
-
-    def apply_animation_to_target(self):
-        """Load an animation file and apply it to the target rig."""
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self.ui, "Apply Animation to Target", "", "JSON Files (*.json)")
-        if not path:
-            return
-        data = json_io.load_animation(path)
-        mapping = {m["source"]: m["target"] for m in self.model.get_mappings()}
-        json_io.apply_animation(data, mapping, frame_offset=0)
-        cmd.inViewMessage(amg="Applied animation to target", pos='midCenter', fade=True)
-
-    def preview_pose(self):
-        """Preview a pose file on the target rig without setting keys."""
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self.ui, "Preview Pose", "", "JSON Files (*.json)")
-        if not path:
-            return
-        data = json_io.load_pose(path)
-        mapping = {m["source"]: m["target"] for m in self.model.get_mappings()}
-        json_io.apply_pose(data, mapping, set_keys=False)
-        cmd.inViewMessage(amg="Previewed pose (no keys set)", pos='midCenter', fade=True)
 
     # --- Misc ---
 

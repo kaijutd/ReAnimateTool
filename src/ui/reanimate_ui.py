@@ -204,22 +204,11 @@ class ReAnimateToolUI(QtWidgets.QWidget):
 
     def _setup_library_tab(self):
         """Build the Pose and Animation Library tab."""
-        layout = QtWidgets.QGridLayout(self.library_tab)
-
-        self.save_source_pose_btn = QtWidgets.QPushButton("Save Source Pose")
-        self.save_target_pose_btn = QtWidgets.QPushButton("Save Target Pose")
-        self.load_pose_btn = QtWidgets.QPushButton("Load Pose to Target")
-        self.save_anim_btn = QtWidgets.QPushButton("Save Source Animation")
-        self.apply_anim_btn = QtWidgets.QPushButton("Apply Animation to Target")
-        self.preview_pose_btn = QtWidgets.QPushButton("Preview Pose on Target")
-
-        layout.addWidget(self.save_source_pose_btn, 0, 0)
-        layout.addWidget(self.save_target_pose_btn, 0, 1)
-        layout.addWidget(self.load_pose_btn, 1, 0)
-        layout.addWidget(self.save_anim_btn, 1, 1)
-        layout.addWidget(self.apply_anim_btn, 2, 0)
-        layout.addWidget(self.preview_pose_btn, 2, 1)
-
+        from ui.widgets.library_widget import LibraryWidget
+        layout = QtWidgets.QVBoxLayout(self.library_tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.library_widget = LibraryWidget(self.library_tab)
+        layout.addWidget(self.library_widget)
     # --- Window Sizing ---
 
     def adjust_window_to_tree(self, extra_width=175, extra_height=125):

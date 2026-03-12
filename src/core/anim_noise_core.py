@@ -157,6 +157,9 @@ class AnimNoiseCore:
                             return keys_created
 
                     base_val = base_samples[full_attr][f]
+                    if base_val is None:
+                        op_index += 1
+                        continue
                     noise_v = self._generate_noise(
                         f, p['noise_type'], p['frequency'],
                         p['octaves'], p['persistence'], p['seed']

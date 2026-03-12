@@ -223,8 +223,7 @@ def apply_pose(data, mapping=None):
         data (dict): Pose data dict from load_pose.
         mapping (list): Optional list of {source, target} dicts.
     """
-    frame = data.get("frame", cmds.currentTime(q=True))
-    cmds.currentTime(frame)
+    frame = frame = cmds.currentTime(q=True)
 
     mapping_dict = {m["source"]: m["target"] for m in mapping} if mapping else {}
 
